@@ -1,0 +1,172 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Mongo Dynamic Query Builder</title>
+    <style>
+      body { font-family: Arial, sans-serif; margin: 0; background: #f7f8fc; color: #1f2937; }
+      .container { max-width: 1100px; margin: 20px auto; background: white; padding: 16px; border-radius: 10px; box-shadow: 0 8px 20px rgba(0,0,0,.08); }
+      h1 { margin-top: 0; }
+      .row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 12px; }
+      .full { grid-column: 1 / -1; }
+      label { display: block; font-size: 12px; margin-bottom: 5px; color: #334155; }
+      input, select, textarea, button { width: 100%; box-sizing: border-box; padding: 8px; border: 1px solid #cbd5e1; border-radius: 6px; }
+      button { cursor: pointer; background: #2563eb; color: white; border: 0; font-weight: 600; }
+      button.secondary { background: #0f766e; }
+      .filters { border: 1px dashed #94a3b8; border-radius: 6px; padding: 10px; }
+      .filter-item { display: grid; grid-template-columns: 1fr 130px 1fr 80px; gap: 8px; margin-bottom: 8px; }
+      pre { background: #0b1020; color: #d6e2ff; padding: 12px; border-radius: 8px; overflow: auto; max-height: 350px; }
+      .badge { display:inline-block; font-size:11px; padding:3px 8px; border-radius:999px; background:#e2e8f0; margin-left:8px; }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <h1>MongoDB Compass-like Query Builder</h1>
+
+      <div class="row">
+        <div>
+          <label>Collection</label>
+          <select id="collection"></select>
+        </div>
+        <div>
+          <label>Projection fields (comma separated)</label>
+          <input id="projection" placeholder="name,email,total" />
+        </div>
+      </div>
+
+      <div class="row full">
+        <div class="filters full">
+          <label>Filters</label>
+          <div id="filters"></div>
+          <button type="button" id="addFilter">Add filter</button>
+        </div>
+      </div>
+
+      <div class="row">
+        <div>
+          <label>Sort field</label>
+          <input id="sortField" placeholder="createdAt" />
+        </div>
+        <div>
+          <label>Sort dir</label>
+          <select id="sortDir"><option value="desc">desc</option><option value="asc">asc</option></select>
+        </div>
+      </div>
+
+      <div class="row">
+        <div>
+          <label>Limit</label>
+          <input id="limit" type="number" value="50" min="1" max="500" />
+        </div>
+        <div style="display:flex;align-items:flex-end;gap:8px;">
+          <button id="runQuery">Run Query Builder</button>
+          <button id="askBtn" class="secondary">Ask Question</button>
+        </div>
+      </div>
+
+      <div class="row full">
+        <div class="full">
+          <label>Ask in natural language</label>
+          <textarea id="question" rows="3" placeholder="Example: show latest 10 orders where total greater than 100"></textarea>
+        </div>
+      </div>
+
+      <h3>Generated Query <span id="source" class="badge">manual</span></h3>
+      <pre id="queryOut">{}</pre>
+
+      <h3>Response</h3>
+      <pre id="responseOut">[]</pre>
+    </div>
+
+    <script>
+      const collectionEl = document.getElementById('collection');
+      const filtersEl = document.getElementById('filters');
+      const addFilterBtn = document.getElementById('addFilter');
+      const queryOut = document.getElementById('queryOut');
+      const responseOut = document.getElementById('responseOut');
+      const sourceEl = document.getElementById('source');
+
+      function addFilterRow(defaults = {}) {
+        const wrapper = document.createElement('div');
+        wrapper.className = 'filter-item';
+        wrapper.innerHTML = `
+          <input placeholder="field" value="${defaults.field || ''}" />
+          <select>
+            <option value="eq">eq</option>
+            <option value="ne">ne</option>
+            <option value="gt">gt</option>
+            <option value="gte">gte</option>
+            <option value="lt">lt</option>
+            <option value="lte">lte</option>
+            <option value="in">in</option>
+            <option value="regex">regex</option>
+          </select>
+          <input placeholder="value" value="${defaults.value ?? ''}" />
+          <button type="button">remove</button>
+        `;
+        wrapper.querySelector('select').value = defaults.op || 'eq';
+        wrapper.querySelector('button').onclick = () => wrapper.remove();
+        filtersEl.appendChild(wrapper);
+      }
+
+      addFilterBtn.onclick = () => addFilterRow();
+      addFilterRow();
+
+      async function initCollections() {
+        const res = await fetch('/api/collections');
+        const collections = await res.json();
+        collectionEl.innerHTML = collections.map(c => `<option value="${c}">${c}</option>`).join('');
+      }
+
+      function getFilters() {
+        return Array.from(filtersEl.querySelectorAll('.filter-item')).map(row => {
+          const [field, op, value] = [
+            row.children[0].value.trim(),
+            row.children[1].value,
+            row.children[2].value
+          ];
+          return { field, op, value };
+        }).filter(f => f.field);
+      }
+
+      function buildPayload() {
+        const sortField = document.getElementById('sortField').value.trim();
+        return {
+          collection: collectionEl.value,
+          filters: getFilters(),
+          projection: document.getElementById('projection').value.split(',').map(v => v.trim()).filter(Boolean),
+          sort: sortField ? [{ field: sortField, dir: document.getElementById('sortDir').value }] : [],
+          limit: Number(document.getElementById('limit').value || 50)
+        };
+      }
+
+      document.getElementById('runQuery').onclick = async () => {
+        sourceEl.textContent = 'manual';
+        const payload = buildPayload();
+        const res = await fetch('/api/query', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
+        });
+        const json = await res.json();
+        queryOut.textContent = JSON.stringify(json.query || json, null, 2);
+        responseOut.textContent = JSON.stringify(json.data || json, null, 2);
+      };
+
+      document.getElementById('askBtn').onclick = async () => {
+        const question = document.getElementById('question').value.trim();
+        const payload = { collection: collectionEl.value, question };
+        const res = await fetch('/api/ask', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
+        });
+        const json = await res.json();
+        sourceEl.textContent = json.source || 'heuristic';
+        queryOut.textContent = JSON.stringify(json.query || json, null, 2);
+        responseOut.textContent = JSON.stringify(json.data || json, null, 2);
+      };
+
+      initCollections().catch(err => {
+        responseOut.textContent = 'Failed to load collections: ' + err.message;
+      });
+    </script>
+  </body>
+</html>
