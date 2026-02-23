@@ -74,11 +74,37 @@ function buildFilter(filters = [], options = {}) {
     const normalizedValue = parseFilterValue(op, filter.value);
     const condition = SUPPORTED_OPERATORS[op](normalizedValue);
 
+    const existing = mongoFilter[field];
+
+    // If there is no existing condition for this field, keep current behavior:
+    // store scalars for simple equality, operator-objects for others.
+    if (existing === undefined) {
+      if (op === 'eq') {
+        mongoFilter[field] = condition;
+      } else {
+        mongoFilter[field] = condition;
+      }
+      continue;
+    }
+
+    // There is already a condition for this field; normalize any scalar
+    // (from a previous 'eq') to an operator-object so we can safely merge.
+    let existingCondition;
+    if (existing !== null && typeof existing === 'object' && !Array.isArray(existing)) {
+      existingCondition = existing;
+    } else {
+      existingCondition = { $eq: existing };
+    }
+
     if (op === 'eq') {
-      mongoFilter[field] = condition;
+      // Represent equality explicitly when combining with other operators.
+      mongoFilter[field] = {
+        ...existingCondition,
+        $eq: normalizedValue
+      };
     } else {
       mongoFilter[field] = {
-        ...(mongoFilter[field] || {}),
+        ...existingCondition,
         ...condition
       };
     }
