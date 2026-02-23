@@ -7,7 +7,7 @@ const SUPPORTED_OPERATORS = {
   lte: (value) => ({ $lte: value }),
   in: (value) => ({ $in: Array.isArray(value) ? value : [value] }),
   nin: (value) => ({ $nin: Array.isArray(value) ? value : [value] }),
-  regex: (value) => ({ $regex: value, $options: 'i' }),
+  regex: (value) => ({ $regex: String(value), $options: 'i' }),
   exists: (value) => ({ $exists: Boolean(value) })
 };
 
@@ -26,6 +26,17 @@ function parseScalar(value) {
   return value;
 }
 
+function parseFilterValue(op, rawValue) {
+  if (op === 'in' || op === 'nin') {
+    if (Array.isArray(rawValue)) return rawValue.map(parseScalar);
+    return String(rawValue)
+      .split(',')
+      .map((v) => parseScalar(v.trim()))
+      .filter((v) => v !== '');
+  }
+  return parseScalar(rawValue);
+}
+
 function sanitizeField(field) {
   if (typeof field !== 'string' || !field.trim()) {
     throw new Error('Field name is required.');
@@ -37,8 +48,19 @@ function sanitizeField(field) {
   return cleaned;
 }
 
-function buildFilter(filters = []) {
+function assertFieldsAllowed(fields, allowedFields = []) {
+  if (!Array.isArray(allowedFields) || allowedFields.length === 0) return;
+  const allowed = new Set(allowedFields);
+  fields.forEach((field) => {
+    if (!allowed.has(field)) {
+      throw new Error(`Unknown field requested: ${field}`);
+    }
+  });
+}
+
+function buildFilter(filters = [], options = {}) {
   const mongoFilter = {};
+  const normalizedFields = [];
 
   for (const filter of filters) {
     const field = sanitizeField(filter.field);
@@ -48,10 +70,8 @@ function buildFilter(filters = []) {
       throw new Error(`Unsupported operator: ${op}`);
     }
 
-    const normalizedValue = Array.isArray(filter.value)
-      ? filter.value.map(parseScalar)
-      : parseScalar(filter.value);
-
+    normalizedFields.push(field);
+    const normalizedValue = parseFilterValue(op, filter.value);
     const condition = SUPPORTED_OPERATORS[op](normalizedValue);
 
     if (op === 'eq') {
@@ -64,24 +84,36 @@ function buildFilter(filters = []) {
     }
   }
 
+  assertFieldsAllowed(normalizedFields, options.allowedFields);
   return mongoFilter;
 }
 
-function buildProjection(fields = []) {
+function buildProjection(fields = [], options = {}) {
   if (!Array.isArray(fields) || fields.length === 0) return undefined;
+  const normalized = fields.map(sanitizeField);
+  assertFieldsAllowed(normalized, options.allowedFields);
 
-  return fields.reduce((acc, field) => {
-    acc[sanitizeField(field)] = 1;
+  return normalized.reduce((acc, field) => {
+    acc[field] = 1;
     return acc;
   }, {});
 }
 
-function buildSort(sortRules = []) {
+function buildSort(sortRules = [], options = {}) {
   if (!Array.isArray(sortRules) || sortRules.length === 0) return undefined;
 
-  return sortRules.reduce((acc, rule) => {
-    const direction = String(rule.dir || 'asc').toLowerCase() === 'desc' ? -1 : 1;
-    acc[sanitizeField(rule.field)] = direction;
+  const normalized = sortRules.map((rule) => {
+    const field = sanitizeField(rule.field);
+    return {
+      field,
+      direction: String(rule.dir || 'asc').toLowerCase() === 'desc' ? -1 : 1
+    };
+  });
+
+  assertFieldsAllowed(normalized.map((item) => item.field), options.allowedFields);
+
+  return normalized.reduce((acc, item) => {
+    acc[item.field] = item.direction;
     return acc;
   }, {});
 }
@@ -99,5 +131,7 @@ module.exports = {
   normalizeLimit,
   parseScalar,
   sanitizeField,
+  parseFilterValue,
+  assertFieldsAllowed,
   SUPPORTED_OPERATORS: Object.keys(SUPPORTED_OPERATORS)
 };

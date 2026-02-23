@@ -6,7 +6,8 @@ const {
   buildFilter,
   buildProjection,
   buildSort,
-  normalizeLimit
+  normalizeLimit,
+  SUPPORTED_OPERATORS
 } = require('./src/queryBuilder');
 const { buildQueryFromQuestion } = require('./src/questionParser');
 
@@ -55,18 +56,38 @@ function collectKeys(value, prefix, keys) {
   });
 }
 
+async function assertCollectionExists(collectionName) {
+  const details = await db.listCollections({ name: collectionName }).toArray();
+  if (!details.length) {
+    throw new Error(`Collection not found: ${collectionName}`);
+  }
+}
+
 app.get('/health', (_req, res) => {
   res.json({ ok: true, dbConnected: Boolean(db) });
 });
 
+app.get('/api/operators', (_req, res) => {
+  res.json({ operators: SUPPORTED_OPERATORS });
+});
+
 app.get('/api/collections', ensureDb, async (_req, res) => {
-  const collections = await db.listCollections().toArray();
-  res.json(collections.map((c) => c.name));
+  try {
+    const collections = await db.listCollections().toArray();
+    res.json(collections.map((c) => c.name));
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
 });
 
 app.get('/api/collections/:name/fields', ensureDb, async (req, res) => {
-  const fields = await inferFields(req.params.name);
-  res.json({ collection: req.params.name, fields });
+  try {
+    await assertCollectionExists(req.params.name);
+    const fields = await inferFields(req.params.name);
+    res.json({ collection: req.params.name, fields });
+  } catch (error) {
+    res.status(404).json({ error: error.message });
+  }
 });
 
 app.post('/api/query', ensureDb, async (req, res) => {
@@ -74,9 +95,12 @@ app.post('/api/query', ensureDb, async (req, res) => {
     const { collection, filters, projection, sort, limit } = req.body;
     if (!collection) return res.status(400).json({ error: 'collection is required' });
 
-    const mongoFilter = buildFilter(filters || []);
-    const mongoProjection = buildProjection(projection || []);
-    const mongoSort = buildSort(sort || []);
+    await assertCollectionExists(collection);
+    const allowedFields = await inferFields(collection);
+
+    const mongoFilter = buildFilter(filters || [], { allowedFields });
+    const mongoProjection = buildProjection(projection || [], { allowedFields });
+    const mongoSort = buildSort(sort || [], { allowedFields });
     const mongoLimit = normalizeLimit(limit);
 
     const cursor = db
@@ -111,12 +135,13 @@ app.post('/api/ask', ensureDb, async (req, res) => {
       return res.status(400).json({ error: 'collection and question are required' });
     }
 
+    await assertCollectionExists(collection);
     const fields = await inferFields(collection);
     const draft = await buildQueryFromQuestion({ question, collection, fields });
 
-    const mongoFilter = buildFilter(draft.filters || []);
-    const mongoProjection = buildProjection(draft.projection || []);
-    const mongoSort = buildSort(draft.sort || []);
+    const mongoFilter = buildFilter(draft.filters || [], { allowedFields: fields });
+    const mongoProjection = buildProjection(draft.projection || [], { allowedFields: fields });
+    const mongoSort = buildSort(draft.sort || [], { allowedFields: fields });
     const mongoLimit = normalizeLimit(draft.limit);
 
     const cursor = db

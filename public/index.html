@@ -18,20 +18,25 @@
       .filter-item { display: grid; grid-template-columns: 1fr 130px 1fr 80px; gap: 8px; margin-bottom: 8px; }
       pre { background: #0b1020; color: #d6e2ff; padding: 12px; border-radius: 8px; overflow: auto; max-height: 350px; }
       .badge { display:inline-block; font-size:11px; padding:3px 8px; border-radius:999px; background:#e2e8f0; margin-left:8px; }
+      .hint { font-size: 12px; color: #475569; margin-top: 4px; }
+      .error { background: #fee2e2; color: #991b1b; padding: 8px; border-radius: 6px; margin-bottom: 12px; display: none; }
     </style>
   </head>
   <body>
     <div class="container">
       <h1>MongoDB Compass-like Query Builder</h1>
+      <div id="errorBox" class="error"></div>
 
       <div class="row">
         <div>
           <label>Collection</label>
           <select id="collection"></select>
+          <div class="hint">Fields auto-refresh on collection change.</div>
         </div>
         <div>
           <label>Projection fields (comma separated)</label>
-          <input id="projection" placeholder="name,email,total" />
+          <input id="projection" placeholder="name,email,total" list="fields-list" />
+          <div class="hint" id="knownFields"></div>
         </div>
       </div>
 
@@ -46,7 +51,7 @@
       <div class="row">
         <div>
           <label>Sort field</label>
-          <input id="sortField" placeholder="createdAt" />
+          <input id="sortField" placeholder="createdAt" list="fields-list" />
         </div>
         <div>
           <label>Sort dir</label>
@@ -77,6 +82,8 @@
 
       <h3>Response</h3>
       <pre id="responseOut">[]</pre>
+
+      <datalist id="fields-list"></datalist>
     </div>
 
     <script>
@@ -86,12 +93,25 @@
       const queryOut = document.getElementById('queryOut');
       const responseOut = document.getElementById('responseOut');
       const sourceEl = document.getElementById('source');
+      const fieldsListEl = document.getElementById('fields-list');
+      const knownFieldsEl = document.getElementById('knownFields');
+      const errorBoxEl = document.getElementById('errorBox');
+
+      function showError(message = '') {
+        if (!message) {
+          errorBoxEl.style.display = 'none';
+          errorBoxEl.textContent = '';
+          return;
+        }
+        errorBoxEl.style.display = 'block';
+        errorBoxEl.textContent = message;
+      }
 
       function addFilterRow(defaults = {}) {
         const wrapper = document.createElement('div');
         wrapper.className = 'filter-item';
         wrapper.innerHTML = `
-          <input placeholder="field" value="${defaults.field || ''}" />
+          <input placeholder="field" value="${defaults.field || ''}" list="fields-list" />
           <select>
             <option value="eq">eq</option>
             <option value="ne">ne</option>
@@ -100,6 +120,7 @@
             <option value="lt">lt</option>
             <option value="lte">lte</option>
             <option value="in">in</option>
+            <option value="nin">nin</option>
             <option value="regex">regex</option>
           </select>
           <input placeholder="value" value="${defaults.value ?? ''}" />
@@ -113,11 +134,36 @@
       addFilterBtn.onclick = () => addFilterRow();
       addFilterRow();
 
-      async function initCollections() {
-        const res = await fetch('/api/collections');
-        const collections = await res.json();
-        collectionEl.innerHTML = collections.map(c => `<option value="${c}">${c}</option>`).join('');
+      async function fetchJson(url, options) {
+        showError('');
+        const res = await fetch(url, options);
+        const data = await res.json();
+        if (!res.ok) {
+          throw new Error(data.error || `Request failed (${res.status})`);
+        }
+        return data;
       }
+
+      async function refreshFields() {
+        const selected = collectionEl.value;
+        if (!selected) return;
+        const payload = await fetchJson(`/api/collections/${encodeURIComponent(selected)}/fields`);
+        const fields = payload.fields || [];
+        fieldsListEl.innerHTML = fields.map((f) => `<option value="${f}"></option>`).join('');
+        knownFieldsEl.textContent = fields.length
+          ? `Known fields: ${fields.slice(0, 12).join(', ')}${fields.length > 12 ? '...' : ''}`
+          : 'No sampled fields found in this collection yet.';
+      }
+
+      async function initCollections() {
+        const collections = await fetchJson('/api/collections');
+        collectionEl.innerHTML = collections.map(c => `<option value="${c}">${c}</option>`).join('');
+        await refreshFields();
+      }
+
+      collectionEl.addEventListener('change', () => {
+        refreshFields().catch((error) => showError(error.message));
+      });
 
       function getFilters() {
         return Array.from(filtersEl.querySelectorAll('.filter-item')).map(row => {
@@ -142,31 +188,39 @@
       }
 
       document.getElementById('runQuery').onclick = async () => {
-        sourceEl.textContent = 'manual';
-        const payload = buildPayload();
-        const res = await fetch('/api/query', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
-        });
-        const json = await res.json();
-        queryOut.textContent = JSON.stringify(json.query || json, null, 2);
-        responseOut.textContent = JSON.stringify(json.data || json, null, 2);
+        try {
+          sourceEl.textContent = 'manual';
+          const payload = buildPayload();
+          const json = await fetchJson('/api/query', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
+          });
+          queryOut.textContent = JSON.stringify(json.query || json, null, 2);
+          responseOut.textContent = JSON.stringify(json.data || json, null, 2);
+        } catch (error) {
+          showError(error.message);
+        }
       };
 
       document.getElementById('askBtn').onclick = async () => {
-        const question = document.getElementById('question').value.trim();
-        const payload = { collection: collectionEl.value, question };
-        const res = await fetch('/api/ask', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
-        });
-        const json = await res.json();
-        sourceEl.textContent = json.source || 'heuristic';
-        queryOut.textContent = JSON.stringify(json.query || json, null, 2);
-        responseOut.textContent = JSON.stringify(json.data || json, null, 2);
+        try {
+          const question = document.getElementById('question').value.trim();
+          if (!question) {
+            showError('Please enter a question before clicking Ask Question.');
+            return;
+          }
+          const payload = { collection: collectionEl.value, question };
+          const json = await fetchJson('/api/ask', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
+          });
+          sourceEl.textContent = json.source || 'heuristic';
+          queryOut.textContent = JSON.stringify(json.query || json, null, 2);
+          responseOut.textContent = JSON.stringify(json.data || json, null, 2);
+        } catch (error) {
+          showError(error.message);
+        }
       };
 
-      initCollections().catch(err => {
-        responseOut.textContent = 'Failed to load collections: ' + err.message;
-      });
+      initCollections().catch(err => showError(`Failed to load collections: ${err.message}`));
     </script>
   </body>
 </html>

@@ -13,7 +13,8 @@ A lightweight Compass-like web app for:
 - **Natural-language ask mode** (`/api/ask`) that:
   - Uses OpenAI (if `OPENAI_API_KEY` is provided), or
   - Falls back to a deterministic heuristic parser.
-- **Field discovery** from sampled documents.
+- **Collection-aware field validation** for filters/projections/sorts.
+- **Field discovery** from sampled documents, surfaced in UI auto-complete.
 - Basic operator and field validation for safer query execution.
 
 ## Setup
@@ -43,6 +44,7 @@ Open `http://localhost:3000`.
 
 ## API
 
+- `GET /api/operators`
 - `GET /api/collections`
 - `GET /api/collections/:name/fields`
 - `POST /api/query`
@@ -57,3 +59,7 @@ Open `http://localhost:3000`.
 }
 ```
 
+### Notes
+
+- `in`/`nin` filters accept comma-separated values from UI (e.g. `shipped,pending,cancelled`).
+- Requests that reference unknown fields now return a validation error.

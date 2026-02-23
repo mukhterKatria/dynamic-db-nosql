@@ -1,7 +1,9 @@
 const OpenAI = require('openai');
 
 function extractJson(text) {
-  const match = text.match(/\{[\s\S]*\}/);
+  const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  const payload = fenced ? fenced[1] : text;
+  const match = payload.match(/\{[\s\S]*\}/);
   if (!match) throw new Error('No JSON found in model response.');
   return JSON.parse(match[0]);
 }
@@ -13,7 +15,11 @@ async function parseQuestionWithLLM({ question, collection, fields }) {
   const client = new OpenAI({ apiKey });
   const model = process.env.OPENAI_MODEL || 'gpt-4o-mini';
 
-  const systemPrompt = `You are a MongoDB query planner.\nReturn only JSON with keys: filters (array), projection (array), sort (array), limit (number).\nFilters item format: {"field":"name","op":"eq|ne|gt|gte|lt|lte|in|nin|regex|exists","value":any}.\nSort item format: {"field":"name","dir":"asc|desc"}.\nUse only field names from the provided field list. If unsure, leave arrays empty.`;
+  const systemPrompt = `You are a MongoDB query planner.
+Return only JSON with keys: filters (array), projection (array), sort (array), limit (number).
+Filters item format: {"field":"name","op":"eq|ne|gt|gte|lt|lte|in|nin|regex|exists","value":any}.
+Sort item format: {"field":"name","dir":"asc|desc"}.
+Use only field names from the provided field list. If unsure, leave arrays empty.`;
 
   const userPrompt = `Collection: ${collection}\nAvailable fields: ${fields.join(', ') || 'unknown'}\nQuestion: ${question}`;
 
@@ -59,10 +65,20 @@ function parseQuestionHeuristic({ question }) {
 }
 
 async function buildQueryFromQuestion({ question, collection, fields = [] }) {
+  if (!question || !question.trim()) {
+    return {
+      filters: [],
+      projection: [],
+      sort: [],
+      limit: 50,
+      source: 'empty'
+    };
+  }
+
   try {
     const llmResult = await parseQuestionWithLLM({ question, collection, fields });
     if (llmResult) return { ...llmResult, source: 'llm' };
-  } catch (error) {
+  } catch (_error) {
     // Fallback to deterministic heuristic parser.
   }
 
